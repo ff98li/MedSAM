@@ -10,6 +10,7 @@ from ipywidgets import interact, widgets, FileUpload
 from IPython.display import display
 from matplotlib import patches as patches
 from matplotlib import pyplot as plt
+from copy import deepcopy
 
 def show_mask(mask, ax, random_color=False, alpha=0.95):
     if random_color:
