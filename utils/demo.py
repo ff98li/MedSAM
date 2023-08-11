@@ -20,7 +20,6 @@ def show_mask(mask, ax, random_color=False, alpha=0.95):
     mask_image = mask.reshape(h, w, 1) * color.reshape(1, 1, -1)
     ax.imshow(mask_image)
 
-
 class BboxPromptDemo:
     def __init__(self, model):
         self.model = model
@@ -33,36 +32,9 @@ class BboxPromptDemo:
         self.x0, self.y0, self.x1, self.y1 = 0., 0., 0., 0.
         self.rect = None
         self.fig, self.axes = None, None
+        self.segs = []
 
-    def show_colab(self, fig_size=5, random_color=False, alpha=0.95):
-
-        uploader = widgets.FileUpload(
-            accept='image/*',
-            multiple=False
-        )
-        def _on_upload(change):
-            image_buffer = change["new"][next(iter(change["new"]))]['content']
-            image_stream = np.frombuffer(image_buffer, np.uint8)
-            image = cv2.imdecode(image_stream, cv2.IMREAD_COLOR)
-            image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-            self.preprocess_image(image)
-            uploader.value.clear()
-            uploader._counter = 0
-            self.show(fig_size=fig_size, random_color=random_color, alpha=alpha)
-            #assert self.image is not None, "Please set image first."
-            #fig, axes = plt.subplots(1, 1, figsize=(fig_size, fig_size))
-            #fig.canvas.header_visible = False
-            #fig.canvas.footer_visible = False
-            #fig.canvas.toolbar_visible = False
-            #fig.canvas.resizable = False
-            #plt.tight_layout()
-            #axes.imshow(self.image)
-            #axes.axis('off')
-            #plt.show()
-        display(uploader)
-        uploader.observe(_on_upload, names='value')
-
-    def show(self, fig_size=5, random_color=True, alpha=0.65):
+    def _show(self, fig_size=5, random_color=True, alpha=0.65):
         assert self.image is not None, "Please set image first."
 
         self.fig, self.axes = plt.subplots(1, 1, figsize=(fig_size, fig_size))
@@ -75,21 +47,20 @@ class BboxPromptDemo:
         self.axes.imshow(self.image)
         self.axes.axis('off')
 
-
-        def on_press(event):
+        def __on_press(event):
             if event.inaxes == self.axes:
                 self.x0 = float(event.xdata) 
                 self.y0 = float(event.ydata)
                 self.currently_selecting = True
                 self.rect = plt.Rectangle(
-                    (self.x0,self.y0),
+                    (self.x0, self.y0),
                     1,1, linestyle="--",
                     edgecolor="crimson", fill=False
                 )
                 self.axes.add_patch(self.rect)
                 self.rect.set_visible(False)
 
-        def on_release(event):
+        def __on_release(event):
             if event.inaxes == self.axes:
                 if self.currently_selecting:
                     self.x1 = float(event.xdata)
@@ -98,20 +69,21 @@ class BboxPromptDemo:
                     self.currently_selecting = False
                     self.rect.set_visible(False)
                     self.axes.patches[0].remove()
-                    print(len(self.axes.images))
                     x_min = min(self.x0, self.x1)
                     x_max = max(self.x0, self.x1)
                     y_min = min(self.y0, self.y1)
                     y_max = max(self.y0, self.y1)
                     bbox = np.array([x_min, y_min, x_max, y_max])
                     with torch.no_grad():
-                        seg = self.infer(bbox)
+                        seg = self._infer(bbox)
                         torch.cuda.empty_cache()
                     show_mask(seg, self.axes, random_color=random_color, alpha=alpha)
+                    self.segs.append(deepcopy(seg))
                     del seg
                     self.rect = None
+                    gc.collect()
 
-        def on_motion(event):
+        def __on_motion(event):
             if event.inaxes == self.axes:
                 if self.currently_selecting:
                     self.x1 = float(event.xdata)
@@ -125,10 +97,10 @@ class BboxPromptDemo:
                     self.rect.set_width(rect_width)
                     rect_height = np.diff(ylim)[0]
                     self.rect.set_height(rect_height)
-                    #fig.canvas.draw_idle()
+                    self.fig.canvas.draw_idle()
 
         clear_button = widgets.Button(description="clear")
-        def on_clear_button_clicked(b):
+        def __on_clear_button_clicked(b):
             for i in range(len(self.axes.images)):
                 self.axes.images[0].remove()
             self.axes.clear()
@@ -136,34 +108,48 @@ class BboxPromptDemo:
             self.axes.imshow(self.image)
             if len(self.axes.patches) > 0:
                 self.axes.patches[0].remove()
+            self.segs = []
             self.fig.canvas.draw_idle()
+
+        save_button = widgets.Button(description="save")
+        def __on_save_button_clicked(b):
+            plt.savefig("seg_result.png", bbox_inches='tight', pad_inches=0)
+            if len(self.segs) > 0:
+                save_seg = np.zeros_like(self.segs[0])
+                for i, seg in enumerate(self.segs, start=1):
+                    save_seg[seg > 0] = i
+                cv2.imwrite("segs.png", save_seg)
+                print(f"Segmentation result saved to {getcwd()}")
         
         display(clear_button)
-        clear_button.on_click(on_clear_button_clicked)
+        clear_button.on_click(__on_clear_button_clicked)
 
-        self.fig.canvas.mpl_connect('button_press_event', on_press)
-        self.fig.canvas.mpl_connect('motion_notify_event', on_motion)
-        self.fig.canvas.mpl_connect('button_release_event', on_release)
+        self.fig.canvas.mpl_connect('button_press_event', __on_press)
+        self.fig.canvas.mpl_connect('motion_notify_event', __on_motion)
+        self.fig.canvas.mpl_connect('button_release_event', __on_release)
 
         plt.show()
 
-    def show_local(self, image_path, fig_size=5, random_color=True, alpha=0.65):
+        display(save_button)
+        save_button.on_click(__on_save_button_clicked)
+
+    def show(self, image_path, fig_size=5, random_color=True, alpha=0.65):
         self.set_image_path(image_path)
-        self.show(fig_size=fig_size, random_color=random_color, alpha=alpha)
+        self._show(fig_size=fig_size, random_color=random_color, alpha=alpha)
 
     def set_image_path(self, image_path):
         image = cv2.imread(image_path)
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        self.set_image(image)
+        self._set_image(image)
     
-    def set_image(self, image):
+    def _set_image(self, image):
         self.image = image
         self.img_size = image.shape[:2]
-        image_preprocess = self.preprocess_image(image)
+        image_preprocess = self._preprocess_image(image)
         with torch.no_grad():
             self.image_embeddings = self.model.image_encoder(image_preprocess)
 
-    def preprocess_image(self, image):
+    def _preprocess_image(self, image):
         img_resize = cv2.resize(
             image,
             (1024, 1024),
@@ -178,9 +164,10 @@ class BboxPromptDemo:
         return img_tensor
     
     @torch.no_grad()
-    def infer(self, bbox):
-        scale = 1024 / max(self.img_size)
-        bbox_1024 = bbox * scale
+    def _infer(self, bbox):
+        ori_H, ori_W = self.img_size
+        scale_to_1024 = 1024 / np.array([ori_W, ori_H, ori_W, ori_H])
+        bbox_1024 = bbox * scale_to_1024
         bbox_torch = torch.as_tensor(bbox_1024, dtype=torch.float).unsqueeze(0).to(self.model.device)
         if len(bbox_torch.shape) == 2:
             bbox_torch = bbox_torch.unsqueeze(1)
@@ -209,4 +196,3 @@ class BboxPromptDemo:
         low_res_pred = low_res_pred.squeeze().cpu().numpy()  # (256, 256)
         medsam_seg = (low_res_pred > 0.5).astype(np.uint8)
         return medsam_seg
-
